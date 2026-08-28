@@ -19,7 +19,7 @@ try:
     from PyQt5.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QTreeWidget,
         QTreeWidgetItem, QSplitter, QLabel, QMenu, QGroupBox,
-        QApplication, QLineEdit, QAction, QMessageBox,
+        QApplication, QLineEdit, QAction, QMessageBox, QCheckBox,
     )
     from PyQt5.QtCore import Qt
     from PyQt5.QtGui import QIcon
@@ -27,7 +27,7 @@ except ImportError:
     from PyQt6.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QTreeWidget,
         QTreeWidgetItem, QSplitter, QLabel, QMenu, QGroupBox,
-        QApplication, QLineEdit, QMessageBox,
+        QApplication, QLineEdit, QMessageBox, QCheckBox,
     )
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QIcon, QAction
@@ -40,6 +40,16 @@ _CustomContextMenu = (
     getattr(Qt, "CustomContextMenu", None) or Qt.ContextMenuPolicy.CustomContextMenu
 )
 
+NOISE_FILES = frozenset({
+    "meta.ini", "readme.md", "readme.txt", "readme",
+    "license", "license.txt", "license.md",
+    "changelog.md", "changelog.txt",
+})
+
+NOISE_PREFIXES = (
+    ".git",
+)
+
 BINARY_EXTENSIONS = frozenset({
     ".dds", ".bsa", ".ba2", ".esp", ".esm", ".esl", ".fuz", ".wav", ".mp3",
     ".ogg", ".pex", ".dll", ".exe", ".hkx", ".nif", ".bto", ".btr", ".lip",
@@ -50,14 +60,14 @@ BINARY_EXTENSIONS = frozenset({
 
 class ConflictDiffDialog(QDialog):
 
-    def __init__(self, organizer, parent=None):
+    def __init__(self, organizer, parent=None, selected_mod=None):
         super().__init__(parent)
         self._org = organizer
         self.setWindowTitle("Conflict Diff")
         self.setMinimumSize(780, 560)
         self.resize(920, 680)
         self._build_ui()
-        self._populate_mod_list()
+        self._populate_mod_list(selected_mod)
 
     # ── UI construction ──────────────────────────────────────────────
 
@@ -68,15 +78,32 @@ class ConflictDiffDialog(QDialog):
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Mod:"))
         self._mod_combo = QComboBox()
+        self._mod_combo.setEditable(True)
+        self._mod_combo.setInsertPolicy(QComboBox.NoInsert)
         self._mod_combo.setMinimumWidth(300)
-        self._mod_combo.currentTextChanged.connect(self._on_mod_changed)
+        self._mod_combo.completer().setFilterMode(
+            getattr(Qt, "MatchContains", None) or Qt.MatchFlag.MatchContains
+        )
+        self._mod_combo.completer().setCaseSensitivity(
+            getattr(Qt, "CaseInsensitive", None) or Qt.CaseSensitivity.CaseInsensitive
+        )
+        self._mod_combo.activated.connect(
+            lambda idx: self._on_mod_changed(self._mod_combo.itemText(idx))
+        )
         bar.addWidget(self._mod_combo, 1)
         bar.addWidget(QLabel("Filter:"))
         self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText("type to filter files…")
+        self._filter_edit.setPlaceholderText("filter files… (prefix ! or ^ to exclude)")
         self._filter_edit.setClearButtonEnabled(True)
         self._filter_edit.textChanged.connect(self._apply_filter)
         bar.addWidget(self._filter_edit)
+        self._hide_noise = QCheckBox("Hide noise")
+        self._hide_noise.setToolTip(
+            "Hide commonly-conflicting files: meta.ini, README, LICENSE, .git, etc."
+        )
+        self._hide_noise.setChecked(True)
+        self._hide_noise.toggled.connect(lambda: self._apply_filter(self._filter_edit.text()))
+        bar.addWidget(self._hide_noise)
         root.addLayout(bar)
 
         # three panes
@@ -119,7 +146,7 @@ class ConflictDiffDialog(QDialog):
 
     # ── data ─────────────────────────────────────────────────────────
 
-    def _populate_mod_list(self):
+    def _populate_mod_list(self, selected_mod=None):
         ml = self._org.modList()
         active = sorted(
             (m for m in ml.allMods() if ml.state(m) & mobase.ModState.ACTIVE),
@@ -128,7 +155,13 @@ class ConflictDiffDialog(QDialog):
         self._mod_combo.blockSignals(True)
         self._mod_combo.addItem("— select a mod —")
         self._mod_combo.addItems(active)
+        if selected_mod:
+            idx = self._mod_combo.findText(selected_mod)
+            if idx >= 0:
+                self._mod_combo.setCurrentIndex(idx)
         self._mod_combo.blockSignals(False)
+        if selected_mod and self._mod_combo.currentText() == selected_mod:
+            self._on_mod_changed(selected_mod)
 
     def _on_mod_changed(self, name):
         if not name or name.startswith("—"):
@@ -154,7 +187,8 @@ class ConflictDiffDialog(QDialog):
 
         ml = self._org.modList()
 
-        for dirpath, _dirs, files in os.walk(mod_dir):
+        for dirpath, dirs, files in os.walk(mod_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for fname in files:
                 abs_path = os.path.join(dirpath, fname)
                 rel = os.path.relpath(abs_path, mod_dir).replace("\\", "/")
@@ -283,13 +317,38 @@ class ConflictDiffDialog(QDialog):
 
     # ── filter ───────────────────────────────────────────────────────
 
+    def _is_noise(self, rel_path):
+        basename = rel_path.rsplit("/", 1)[-1].lower()
+        if basename in NOISE_FILES:
+            return True
+        parts = rel_path.lower().split("/")
+        return any(p.startswith(pfx) for p in parts for pfx in NOISE_PREFIXES)
+
     def _apply_filter(self, text):
-        text = text.lower()
+        text = text.strip()
+        hide_noise = self._hide_noise.isChecked()
+
+        negate = False
+        pattern = ""
+        if text:
+            negate = text.startswith("!") or text.startswith("^")
+            pattern = text[1:].strip().lower() if negate else text.lower()
+
         for pane in (self._win, self._lose, self._none):
             tree = pane["tree"]
             for i in range(tree.topLevelItemCount()):
                 row = tree.topLevelItem(i)
-                row.setHidden(bool(text) and text not in row.text(0).lower())
+                rel = row.text(0).lower()
+
+                if hide_noise and self._is_noise(rel):
+                    row.setHidden(True)
+                    continue
+
+                if not pattern:
+                    row.setHidden(False)
+                else:
+                    match = pattern in rel
+                    row.setHidden(match if negate else not match)
 
 
 # ── plugin entry point ───────────────────────────────────────────────
@@ -336,11 +395,23 @@ class ConflictDiff(mobase.IPluginTool):
         self._parent = widget
 
     def display(self):
-        dlg = ConflictDiffDialog(self._org, self._parent)
+        selected = self._get_selected_mod()
+        dlg = ConflictDiffDialog(self._org, self._parent, selected_mod=selected)
         if hasattr(dlg, "exec"):
             dlg.exec()
         else:
             dlg.exec_()
+
+    def _get_selected_mod(self):
+        try:
+            ml = self._org.modList()
+            mods = ml.allMods()
+            for mod in mods:
+                if ml.state(mod) & 0x10:  # ModState.SELECTED (not always in mobase)
+                    return mod
+        except Exception:
+            pass
+        return None
 
 
 def createPlugin():

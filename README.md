@@ -17,7 +17,7 @@ Adds a **Tools > Conflict Diff** menu entry that opens a three-pane conflict bro
 
 ## Usage
 
-1. Select a mod from the dropdown at the top of the dialog.
+1. Select a mod from the dropdown at the top of the dialog. The dropdown is searchable — type to filter mod names. If a mod is selected in MO2's mod list when you open the tool, it will be pre-selected.
 2. The three panes populate with the mod's file conflicts:
    - **Winning file conflicts** — files where the selected mod overwrites another mod.
    - **Losing file conflicts** — files where another mod overwrites the selected mod.
@@ -27,7 +27,8 @@ Adds a **Tools > Conflict Diff** menu entry that opens a three-pane conflict bro
    - **Open** — opens the file with its default application.
    - **Open in Explorer** — reveals the file in Windows Explorer.
    - **Open (from \<other mod\>)** — opens the other mod's version of the file.
-4. Use the **Filter** box to narrow the file list by path.
+4. Use the **Filter** box to narrow the file list by path. Prefix with `!` or `^` to exclude matching files instead (e.g. `!.dds` hides all `.dds` entries).
+5. The **Hide noise** checkbox (on by default) suppresses commonly-conflicting files like `meta.ini`, `README`, `LICENSE`, `.git`, and `changelog` entries.
 
 ## Known Limitations
 
@@ -41,5 +42,7 @@ The plugin is a single Python file implementing MO2's `IPluginTool` interface. N
 
 ### Roadmap
 
-- [ ] Open dialog pre-filtered to the currently selected mod
-- [ ] Searchable mod dropdown (filter by mod name)
+- [x] Open dialog pre-filtered to the currently selected mod
+- [x] Searchable mod dropdown (filter by mod name)
+- [x] Negation filter syntax (`!` / `^` prefix)
+- [x] Hide noise toggle (meta.ini, README, LICENSE, .git, changelog)
