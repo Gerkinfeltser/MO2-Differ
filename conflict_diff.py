@@ -267,17 +267,18 @@ class ConflictDiffDialog(QDialog):
 
     @staticmethod
     def _find_vscode():
+        # prefer Code.exe directly to avoid cmd.exe flash from code.cmd
+        exe_candidates = [
+            os.path.join(os.environ.get("PROGRAMFILES", ""), "Microsoft VS Code", "Code.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Microsoft VS Code", "Code.exe"),
+        ]
+        for c in exe_candidates:
+            if os.path.isfile(c):
+                return c
         import shutil
         found = shutil.which("code") or shutil.which("code.cmd")
         if found:
             return found
-        candidates = [
-            os.path.join(os.environ.get("PROGRAMFILES", ""), "Microsoft VS Code", "bin", "code.cmd"),
-            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Microsoft VS Code", "bin", "code.cmd"),
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
         return None
 
     # ── filter ───────────────────────────────────────────────────────

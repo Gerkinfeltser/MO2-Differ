@@ -2,15 +2,44 @@
 
 A Mod Organizer 2 plugin that lets you diff conflicting files between mods using VS Code.
 
-Adds a **Tools > Conflict Diff** menu entry that opens a three-pane conflict browser (winning, losing, non-conflicted) similar to MO2's built-in Conflicts tab. Right-click any text-based conflicting file and choose **Diff in VS Code** to compare both versions side by side.
+Adds a **Tools > Conflict Diff** menu entry that opens a three-pane conflict browser — winning conflicts, losing conflicts, and non-conflicted files — similar to MO2's built-in Conflicts tab. Right-click any text-based conflicting file and choose **Diff in VS Code** to compare both versions side by side.
 
 ## Install
 
 1. Copy `conflict_diff.py` into your MO2 `plugins/` directory (or symlink it).
 2. Restart MO2.
-3. **Tools > Conflict Diff**.
+3. Open from **Tools > Conflict Diff**.
 
 ## Requirements
 
 - Mod Organizer 2 (2.4.x+ with PyQt5, or 2.5.x with PyQt6)
-- VS Code with `code` on PATH (the plugin also checks standard install locations)
+- [VS Code](https://code.visualstudio.com/) — the plugin looks for `Code.exe` at standard install locations, falling back to `code` / `code.cmd` on PATH.
+
+## Usage
+
+1. Select a mod from the dropdown at the top of the dialog.
+2. The three panes populate with the mod's file conflicts:
+   - **Winning file conflicts** — files where the selected mod overwrites another mod.
+   - **Losing file conflicts** — files where another mod overwrites the selected mod.
+   - **Non-conflicted files** — files unique to the selected mod.
+3. Right-click a conflicting file for options:
+   - **Diff in VS Code** — opens both versions in VS Code's built-in diff viewer (text files only; binary formats like `.dds`, `.nif`, `.esp` are excluded).
+   - **Open** — opens the file with its default application.
+   - **Open in Explorer** — reveals the file in Windows Explorer.
+   - **Open (from \<other mod\>)** — opens the other mod's version of the file.
+4. Use the **Filter** box to narrow the file list by path.
+
+## Known Limitations
+
+- **BSA/BA2 archives** — if the other version of a file lives inside a packed archive rather than as a loose file, the diff will show a "file not found" warning. Only loose file conflicts are supported.
+- **Large mods** — scanning a mod with thousands of files may briefly freeze the UI while conflicts are enumerated.
+- **Priority direction** — winner detection assumes MO2's convention that higher priority number = wins (bottom of load order overwrites). If conflicts appear in the wrong pane, this assumption may need to be inverted for your MO2 version.
+
+## Development
+
+The plugin is a single Python file implementing MO2's `IPluginTool` interface. No build step required — edit `conflict_diff.py` and restart MO2 to pick up changes.
+
+### Roadmap
+
+- [ ] Open dialog pre-filtered to the currently selected mod
+- [ ] Searchable mod dropdown (filter by mod name)
