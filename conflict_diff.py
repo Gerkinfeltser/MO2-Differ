@@ -178,9 +178,17 @@ class ConflictDiffDialog(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
 
+        self._apply_filter()
         for p in (self._win, self._lose, self._none):
-            n = p["tree"].topLevelItemCount()
-            p["box"].setTitle(f"{p['title']} ({n})")
+            visible = sum(
+                1 for i in range(p["tree"].topLevelItemCount())
+                if not p["tree"].topLevelItem(i).isHidden()
+            )
+            total = p["tree"].topLevelItemCount()
+            if visible == total:
+                p["box"].setTitle(f"{p['title']} ({total})")
+            else:
+                p["box"].setTitle(f"{p['title']} ({visible}/{total})")
 
     def _scan(self, mod_name):
         mods_path = self._org.modsPath()
@@ -344,6 +352,18 @@ class ConflictDiffDialog(QDialog):
 
                 row.setHidden(False)
 
+        for pane in (self._win, self._lose, self._none):
+            tree = pane["tree"]
+            visible = sum(
+                1 for i in range(tree.topLevelItemCount())
+                if not tree.topLevelItem(i).isHidden()
+            )
+            total = tree.topLevelItemCount()
+            if visible == total:
+                pane["box"].setTitle(f"{pane['title']} ({total})")
+            else:
+                pane["box"].setTitle(f"{pane['title']} ({visible}/{total})")
+
 
 # ── context menu injection (fragile — depends on MO2 widget names) ───
 
@@ -351,20 +371,30 @@ class _MenuInjector(QObject):
     """Watches for QMenu Show events and injects a 'Conflict Diff' action
     when the menu originates from the main mod list."""
 
-    def __init__(self, mod_list_widget, open_callback):
+    def __init__(self, mod_list_widget, open_callback, log_fn=None):
         super().__init__()
         self._mod_list = mod_list_widget
+        self._viewport = mod_list_widget.viewport()
         self._open_callback = open_callback
         self._armed = False
+        self._log = log_fn or (lambda msg: None)
 
     def eventFilter(self, obj, event):
-        if obj is self._mod_list and event.type() == _ContextMenuEvent:
-            self._armed = True
-        elif self._armed and isinstance(obj, QMenu) and event.type() == _ShowEvent:
-            self._armed = False
-            obj.addSeparator()
-            act = obj.addAction("Conflict Diff")
-            act.triggered.connect(self._on_triggered)
+        etype = event.type()
+        if etype == _ContextMenuEvent:
+            is_ours = (obj is self._mod_list or obj is self._viewport)
+            self._log(f"ContextMenu event on {type(obj).__name__} "
+                      f"name={obj.objectName()!r} is_ours={is_ours}")
+            if is_ours:
+                self._armed = True
+        elif etype == _ShowEvent and isinstance(obj, QMenu):
+            self._log(f"QMenu Show, armed={self._armed}")
+            if self._armed:
+                self._armed = False
+                obj.addSeparator()
+                act = obj.addAction("Conflict Diff")
+                act.triggered.connect(self._on_triggered)
+                self._log("injected Conflict Diff action")
         return False
 
     def _on_triggered(self):
@@ -388,20 +418,67 @@ class ConflictDiff(mobase.IPluginTool):
     def init(self, organizer):
         self._org = organizer
         self._injector = None
+        self._debug_log = os.path.join(
+            os.path.dirname(__file__), "conflict_diff_debug.log"
+        )
         try:
             self._org.onUserInterfaceInitialized(self._on_ui_init)
-        except AttributeError:
-            pass
+            self._log("registered onUserInterfaceInitialized")
+        except Exception as e:
+            self._log(f"onUserInterfaceInitialized failed: {e}")
         return True
 
-    def _on_ui_init(self, main_window):
-        for name in ("modList", "modListView"):
-            widget = main_window.findChild(QTreeView, name)
+    def _log(self, msg):
+        try:
+            with open(self._debug_log, "a", encoding="utf-8") as f:
+                f.write(f"{msg}\n")
+        except Exception:
+            pass
+
+    def _on_ui_init(self, main_window=None):
+        self._log(f"_on_ui_init called, main_window={main_window}")
+        if main_window is None:
+            main_window = QApplication.activeWindow()
+            self._log(f"fallback activeWindow={main_window}")
+        if main_window is None:
+            self._log("no main window found")
+            return
+
+        # dump all tree views and their object names
+        try:
+            from PyQt5.QtWidgets import QAbstractItemView
+        except ImportError:
+            from PyQt6.QtWidgets import QAbstractItemView
+
+        for widget in main_window.findChildren(QAbstractItemView):
+            name = widget.objectName()
+            cls = type(widget).__name__
+            self._log(f"  found {cls} objectName={name!r}")
+
+        # try to find the mod list
+        found = None
+        for name in ("modList", "modListView", "modListWidget", "leftPane"):
+            widget = main_window.findChild(QAbstractItemView, name)
             if widget:
-                self._injector = _MenuInjector(widget, self._open_for_mod)
-                widget.installEventFilter(self._injector)
-                QApplication.instance().installEventFilter(self._injector)
+                found = widget
+                self._log(f"matched widget: {name}")
                 break
+
+        if not found:
+            # fallback: try all QTreeViews
+            trees = main_window.findChildren(QTreeView)
+            self._log(f"QTreeView fallback: {len(trees)} found")
+            for t in trees:
+                self._log(f"  QTreeView objectName={t.objectName()!r}")
+
+        if found:
+            self._injector = _MenuInjector(found, self._open_for_mod, self._log)
+            found.installEventFilter(self._injector)
+            found.viewport().installEventFilter(self._injector)
+            QApplication.instance().installEventFilter(self._injector)
+            self._log(f"injector installed on {found.objectName()!r}")
+        else:
+            self._log("no mod list widget found")
 
     def _open_for_mod(self, mod_name):
         dlg = ConflictDiffDialog(self._org, self._parent, selected_mod=mod_name)
