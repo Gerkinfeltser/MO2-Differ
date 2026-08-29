@@ -257,13 +257,19 @@ class ConflictDiffDialog(QDialog):
         if not d:
             return
 
+        is_winning = (tree is self._win["tree"])
         menu = QMenu(tree)
 
         if has_other and d.get("other_mod"):
             ext = os.path.splitext(d["rel"])[1].lower()
             if ext not in BINARY_EXTENSIONS:
                 act = menu.addAction("Diff in VS Code")
-                act.triggered.connect(lambda: self._diff(d["abs"], d["other_abs"]))
+                if is_winning:
+                    # this mod wins — show other (old) on left, ours (new) on right
+                    act.triggered.connect(lambda: self._diff(d["other_abs"], d["abs"]))
+                else:
+                    # this mod loses — show ours (old) on left, winner (new) on right
+                    act.triggered.connect(lambda: self._diff(d["abs"], d["other_abs"]))
                 menu.addSeparator()
 
         a_open = menu.addAction("Open")
@@ -274,9 +280,20 @@ class ConflictDiffDialog(QDialog):
             lambda: subprocess.Popen(["explorer", "/select,", os.path.normpath(d["abs"])])
         )
 
-        if has_other and d.get("other_abs") and os.path.isfile(d["other_abs"]):
-            a_open2 = menu.addAction(f"Open (from {d['other_mod']})")
-            a_open2.triggered.connect(lambda: os.startfile(d["other_abs"]))
+        a_copy = menu.addAction("Copy path")
+        a_copy.triggered.connect(lambda: QApplication.clipboard().setText(
+            os.path.normpath(d["abs"])
+        ))
+
+        if has_other and d.get("other_abs"):
+            menu.addSeparator()
+            if os.path.isfile(d["other_abs"]):
+                a_open2 = menu.addAction(f"Open (from {d['other_mod']})")
+                a_open2.triggered.connect(lambda: os.startfile(d["other_abs"]))
+            a_copy2 = menu.addAction(f"Copy path (from {d['other_mod']})")
+            a_copy2.triggered.connect(lambda: QApplication.clipboard().setText(
+                os.path.normpath(d["other_abs"])
+            ))
 
         global_pos = tree.viewport().mapToGlobal(pos)
         if hasattr(menu, "exec"):
@@ -371,11 +388,12 @@ class _MenuInjector(QObject):
     """Watches for QMenu Show events and injects a 'Conflict Diff' action
     when the menu originates from the main mod list."""
 
-    def __init__(self, mod_list_widget, open_callback, log_fn=None):
+    def __init__(self, mod_list_widget, open_callback, organizer, log_fn=None):
         super().__init__()
         self._mod_list = mod_list_widget
         self._viewport = mod_list_widget.viewport()
         self._open_callback = open_callback
+        self._org = organizer
         self._armed = False
         self._log = log_fn or (lambda msg: None)
 
@@ -383,27 +401,32 @@ class _MenuInjector(QObject):
         etype = event.type()
         if etype == _ContextMenuEvent:
             is_ours = (obj is self._mod_list or obj is self._viewport)
-            self._log(f"ContextMenu event on {type(obj).__name__} "
-                      f"name={obj.objectName()!r} is_ours={is_ours}")
             if is_ours:
                 self._armed = True
         elif etype == _ShowEvent and isinstance(obj, QMenu):
-            self._log(f"QMenu Show, armed={self._armed}")
             if self._armed:
                 self._armed = False
                 obj.addSeparator()
                 act = obj.addAction("Conflict Diff")
                 act.triggered.connect(self._on_triggered)
-                self._log("injected Conflict Diff action")
+                act2 = obj.addAction("Copy mod path")
+                act2.triggered.connect(self._copy_mod_path)
         return False
 
-    def _on_triggered(self):
+    def _get_selected_mod_name(self):
         idx = self._mod_list.currentIndex()
         if idx.isValid():
-            mod_name = idx.sibling(idx.row(), 0).data()
-            self._open_callback(mod_name)
-        else:
-            self._open_callback(None)
+            return idx.sibling(idx.row(), 0).data()
+        return None
+
+    def _on_triggered(self):
+        self._open_callback(self._get_selected_mod_name())
+
+    def _copy_mod_path(self):
+        name = self._get_selected_mod_name()
+        if name:
+            mod_path = os.path.join(self._org.modsPath(), name)
+            QApplication.clipboard().setText(os.path.normpath(mod_path))
 
 
 # ── plugin entry point ───────────────────────────────────────────────
@@ -472,7 +495,7 @@ class ConflictDiff(mobase.IPluginTool):
                 self._log(f"  QTreeView objectName={t.objectName()!r}")
 
         if found:
-            self._injector = _MenuInjector(found, self._open_for_mod, self._log)
+            self._injector = _MenuInjector(found, self._open_for_mod, self._org, self._log)
             found.installEventFilter(self._injector)
             found.viewport().installEventFilter(self._injector)
             QApplication.instance().installEventFilter(self._injector)
