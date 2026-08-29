@@ -19,18 +19,18 @@ try:
     from PyQt5.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QTreeWidget,
         QTreeWidgetItem, QSplitter, QLabel, QMenu, QGroupBox,
-        QApplication, QLineEdit, QAction, QMessageBox, QCheckBox,
+        QApplication, QLineEdit, QAction, QMessageBox, QTreeView,
     )
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtGui import QIcon
+    from PyQt5.QtCore import Qt, QObject, QEvent
+    from PyQt5.QtGui import QIcon, QCursor
 except ImportError:
     from PyQt6.QtWidgets import (
         QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QTreeWidget,
         QTreeWidgetItem, QSplitter, QLabel, QMenu, QGroupBox,
-        QApplication, QLineEdit, QMessageBox, QCheckBox,
+        QApplication, QLineEdit, QMessageBox, QTreeView,
     )
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QIcon, QAction
+    from PyQt6.QtCore import Qt, QObject, QEvent
+    from PyQt6.QtGui import QIcon, QAction, QCursor
 
 # Qt enum compatibility (PyQt5 uses flat enums, PyQt6 uses scoped)
 _Vertical = getattr(Qt, "Vertical", None) or Qt.Orientation.Vertical
@@ -39,16 +39,20 @@ _WaitCursor = getattr(Qt, "WaitCursor", None) or Qt.CursorShape.WaitCursor
 _CustomContextMenu = (
     getattr(Qt, "CustomContextMenu", None) or Qt.ContextMenuPolicy.CustomContextMenu
 )
-
-NOISE_FILES = frozenset({
-    "meta.ini", "readme.md", "readme.txt", "readme",
-    "license", "license.txt", "license.md",
-    "changelog.md", "changelog.txt",
-})
-
-NOISE_PREFIXES = (
-    ".git",
+_NoInsert = (
+    getattr(QComboBox, "NoInsert", None) or QComboBox.InsertPolicy.NoInsert
 )
+_MatchContains = (
+    getattr(Qt, "MatchContains", None) or Qt.MatchFlag.MatchContains
+)
+_CaseInsensitive = (
+    getattr(Qt, "CaseInsensitive", None) or Qt.CaseSensitivity.CaseInsensitive
+)
+
+_ShowEvent = getattr(QEvent, "Show", None) or QEvent.Type.Show
+_ContextMenuEvent = getattr(QEvent, "ContextMenu", None) or QEvent.Type.ContextMenu
+
+DEFAULT_EXCLUDES = ".fuz, .dds, .nif, .hkx, .pex, .bsa, .ba2, .esp, .esm, .esl, meta.ini, readme, license, changelog, .git"
 
 BINARY_EXTENSIONS = frozenset({
     ".dds", ".bsa", ".ba2", ".esp", ".esm", ".esl", ".fuz", ".wav", ".mp3",
@@ -79,32 +83,31 @@ class ConflictDiffDialog(QDialog):
         bar.addWidget(QLabel("Mod:"))
         self._mod_combo = QComboBox()
         self._mod_combo.setEditable(True)
-        self._mod_combo.setInsertPolicy(QComboBox.NoInsert)
+        self._mod_combo.setInsertPolicy(_NoInsert)
         self._mod_combo.setMinimumWidth(300)
-        self._mod_combo.completer().setFilterMode(
-            getattr(Qt, "MatchContains", None) or Qt.MatchFlag.MatchContains
-        )
-        self._mod_combo.completer().setCaseSensitivity(
-            getattr(Qt, "CaseInsensitive", None) or Qt.CaseSensitivity.CaseInsensitive
-        )
+        self._mod_combo.completer().setFilterMode(_MatchContains)
+        self._mod_combo.completer().setCaseSensitivity(_CaseInsensitive)
         self._mod_combo.activated.connect(
             lambda idx: self._on_mod_changed(self._mod_combo.itemText(idx))
         )
         bar.addWidget(self._mod_combo, 1)
-        bar.addWidget(QLabel("Filter:"))
-        self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText("filter files… (prefix ! or ^ to exclude)")
-        self._filter_edit.setClearButtonEnabled(True)
-        self._filter_edit.textChanged.connect(self._apply_filter)
-        bar.addWidget(self._filter_edit)
-        self._hide_noise = QCheckBox("Hide noise")
-        self._hide_noise.setToolTip(
-            "Hide commonly-conflicting files: meta.ini, README, LICENSE, .git, etc."
-        )
-        self._hide_noise.setChecked(True)
-        self._hide_noise.toggled.connect(lambda: self._apply_filter(self._filter_edit.text()))
-        bar.addWidget(self._hide_noise)
         root.addLayout(bar)
+
+        # include / exclude filter row
+        filter_bar = QHBoxLayout()
+        filter_bar.addWidget(QLabel("Include:"))
+        self._include_edit = QLineEdit()
+        self._include_edit.setPlaceholderText("e.g. .ini, textures")
+        self._include_edit.setClearButtonEnabled(True)
+        self._include_edit.textChanged.connect(self._apply_filter)
+        filter_bar.addWidget(self._include_edit, 1)
+        filter_bar.addWidget(QLabel("Exclude:"))
+        self._exclude_edit = QLineEdit()
+        self._exclude_edit.setText(DEFAULT_EXCLUDES)
+        self._exclude_edit.setClearButtonEnabled(True)
+        self._exclude_edit.textChanged.connect(self._apply_filter)
+        filter_bar.addWidget(self._exclude_edit, 1)
+        root.addLayout(filter_bar)
 
         # three panes
         splitter = QSplitter(_Vertical)
@@ -317,22 +320,13 @@ class ConflictDiffDialog(QDialog):
 
     # ── filter ───────────────────────────────────────────────────────
 
-    def _is_noise(self, rel_path):
-        basename = rel_path.rsplit("/", 1)[-1].lower()
-        if basename in NOISE_FILES:
-            return True
-        parts = rel_path.lower().split("/")
-        return any(p.startswith(pfx) for p in parts for pfx in NOISE_PREFIXES)
+    @staticmethod
+    def _parse_terms(text):
+        return [t.strip().lower() for t in text.split(",") if t.strip()]
 
-    def _apply_filter(self, text):
-        text = text.strip()
-        hide_noise = self._hide_noise.isChecked()
-
-        negate = False
-        pattern = ""
-        if text:
-            negate = text.startswith("!") or text.startswith("^")
-            pattern = text[1:].strip().lower() if negate else text.lower()
+    def _apply_filter(self, _text=None):
+        includes = self._parse_terms(self._include_edit.text())
+        excludes = self._parse_terms(self._exclude_edit.text())
 
         for pane in (self._win, self._lose, self._none):
             tree = pane["tree"]
@@ -340,15 +334,46 @@ class ConflictDiffDialog(QDialog):
                 row = tree.topLevelItem(i)
                 rel = row.text(0).lower()
 
-                if hide_noise and self._is_noise(rel):
+                if excludes and any(ex in rel for ex in excludes):
                     row.setHidden(True)
                     continue
 
-                if not pattern:
-                    row.setHidden(False)
-                else:
-                    match = pattern in rel
-                    row.setHidden(match if negate else not match)
+                if includes and not any(inc in rel for inc in includes):
+                    row.setHidden(True)
+                    continue
+
+                row.setHidden(False)
+
+
+# ── context menu injection (fragile — depends on MO2 widget names) ───
+
+class _MenuInjector(QObject):
+    """Watches for QMenu Show events and injects a 'Conflict Diff' action
+    when the menu originates from the main mod list."""
+
+    def __init__(self, mod_list_widget, open_callback):
+        super().__init__()
+        self._mod_list = mod_list_widget
+        self._open_callback = open_callback
+        self._armed = False
+
+    def eventFilter(self, obj, event):
+        if obj is self._mod_list and event.type() == _ContextMenuEvent:
+            self._armed = True
+        elif self._armed and isinstance(obj, QMenu) and event.type() == _ShowEvent:
+            self._armed = False
+            obj.addSeparator()
+            act = obj.addAction("Conflict Diff")
+            act.triggered.connect(self._on_triggered)
+        return False
+
+    def _on_triggered(self):
+        idx = self._mod_list.currentIndex()
+        if idx.isValid():
+            mod_name = idx.sibling(idx.row(), 0).data()
+            self._open_callback(mod_name)
+        else:
+            self._open_callback(None)
 
 
 # ── plugin entry point ───────────────────────────────────────────────
@@ -362,7 +387,28 @@ class ConflictDiff(mobase.IPluginTool):
 
     def init(self, organizer):
         self._org = organizer
+        self._injector = None
+        try:
+            self._org.onUserInterfaceInitialized(self._on_ui_init)
+        except AttributeError:
+            pass
         return True
+
+    def _on_ui_init(self, main_window):
+        for name in ("modList", "modListView"):
+            widget = main_window.findChild(QTreeView, name)
+            if widget:
+                self._injector = _MenuInjector(widget, self._open_for_mod)
+                widget.installEventFilter(self._injector)
+                QApplication.instance().installEventFilter(self._injector)
+                break
+
+    def _open_for_mod(self, mod_name):
+        dlg = ConflictDiffDialog(self._org, self._parent, selected_mod=mod_name)
+        if hasattr(dlg, "exec"):
+            dlg.exec()
+        else:
+            dlg.exec_()
 
     def name(self):
         return "Conflict Diff"
