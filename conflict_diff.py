@@ -395,6 +395,7 @@ class _MenuInjector(QObject):
         self._open_callback = open_callback
         self._org = organizer
         self._armed = False
+        self._cut_mods = []
         self._log = log_fn or (lambda msg: None)
 
     def eventFilter(self, obj, event):
@@ -407,10 +408,21 @@ class _MenuInjector(QObject):
             if self._armed:
                 self._armed = False
                 obj.addSeparator()
-                act = obj.addAction("Conflict Diff")
+                act = obj.addAction("☯️ Conflict Diff")
                 act.triggered.connect(self._on_triggered)
-                act2 = obj.addAction("Copy mod path")
+                act2 = obj.addAction("📋 Copy mod path")
                 act2.triggered.connect(self._copy_mod_path)
+                obj.addSeparator()
+                act_cut = obj.addAction("✂️ Cut")
+                act_cut.triggered.connect(self._cut_mod)
+                if self._cut_mods:
+                    label = self._cut_mods[0] if len(self._cut_mods) == 1 else f"{len(self._cut_mods)} mods"
+                    act_above = obj.addAction(f"⬆️ Paste higher ({label})")
+                    act_above.triggered.connect(lambda: self._paste_mod(above=True))
+                    act_below = obj.addAction(f"⬇️ Paste lower ({label})")
+                    act_below.triggered.connect(lambda: self._paste_mod(above=False))
+                    act_uncut = obj.addAction(f"Uncut ({label})")
+                    act_uncut.triggered.connect(self._uncut)
         return False
 
     def _get_selected_mod_name(self):
@@ -427,6 +439,38 @@ class _MenuInjector(QObject):
         if name:
             mod_path = os.path.join(self._org.modsPath(), name)
             QApplication.clipboard().setText(os.path.normpath(mod_path))
+
+    def _cut_mod(self):
+        name = self._get_selected_mod_name()
+        if name:
+            self._cut_mods = [name]
+            self._log(f"cut: {name}")
+
+    def _uncut(self):
+        self._log(f"uncut: {self._cut_mods}")
+        self._cut_mods = []
+
+    def _paste_mod(self, above):
+        if not self._cut_mods:
+            return
+        target = self._get_selected_mod_name()
+        if not target:
+            return
+        ml = self._org.modList()
+        target_pri = ml.priority(target)
+        if target_pri < 0:
+            return
+        self._log(f"paste {'above' if above else 'below'} {target} (pri {target_pri}), moving {self._cut_mods}")
+        for mod_name in self._cut_mods:
+            cur_pri = ml.priority(mod_name)
+            if cur_pri < 0:
+                continue
+            new_pri = target_pri if above else (target_pri + 1)
+            if cur_pri < new_pri:
+                new_pri -= 1
+            ml.setPriority(mod_name, new_pri)
+            self._log(f"  moved {mod_name}: {cur_pri} -> {new_pri}")
+        self._cut_mods = []
 
 
 # ── plugin entry point ───────────────────────────────────────────────
